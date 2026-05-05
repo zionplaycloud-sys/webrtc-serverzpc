@@ -86,10 +86,11 @@ if (data.type === "viewer-disconnect") {
     // 👀 VIEWER JOIN
     // ===============================
     if (data.type === "join-viewer") {
-      if (!data.sessionId) {
-        console.log("⚠️ join-viewer missing sessionId");
-        return;
-      }
+
+  if (data.secret !== "Nalukkettil@12123") {
+    console.log("❌ Unauthorized viewer");
+    return;
+  }
 
       currentSessionId = data.sessionId;
       role = "viewer";
@@ -132,15 +133,16 @@ return;
     // ===============================
     // 🟢 AGENT JOIN
     // ===============================
-    if (
-      data.type === "join-agent" ||
-      data.type === "join-broadcaster" ||
-      data.type === "agent-join"
-    ) {
-      if (!data.sessionId) {
-        console.log("⚠️ join-agent missing sessionId");
-        return;
-      }
+if (
+  data.type === "join-agent" ||
+  data.type === "join-broadcaster" ||
+  data.type === "agent-join"
+) {
+
+  if (data.secret !== "Nalukkettil@12123") {
+    console.log("❌ Unauthorized agent");
+    return;
+  }
 
       currentSessionId = data.sessionId;
       role = "agent";
