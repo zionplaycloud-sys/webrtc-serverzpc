@@ -1,10 +1,17 @@
 import WebSocket, { WebSocketServer } from "ws";
 import http from "http";
+const SIGNAL_SECRET = process.env.SIGNAL_SECRET || "";
 
 const sessions = {};
+const connectionLimits = {};
 
 const server = http.createServer((req, res) => {
   if (req.url === "/status") {
+    if (req.headers["x-status-secret"] !== SIGNAL_SECRET) {
+  res.writeHead(403);
+  res.end("Forbidden");
+  return;
+}
     const debugSessions = {};
 
     for (const id in sessions) {
@@ -34,7 +41,38 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ server });
 
+function safeSend(ws, payload) {
+  try {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(payload));
+    }
+  } catch (err) {
+    console.log("safeSend error:", err.message);
+  }
+}
 wss.on("connection", (ws) => {
+  const ip =
+  ws._socket?.remoteAddress || "unknown";
+
+const now = Date.now();
+
+if (!connectionLimits[ip]) {
+  connectionLimits[ip] = [];
+}
+
+connectionLimits[ip] =
+  connectionLimits[ip].filter(
+    (t) => now - t < 60000
+  );
+
+connectionLimits[ip].push(now);
+
+if (connectionLimits[ip].length > 50) {
+  console.log("🚫 Too many websocket connections:", ip);
+
+  ws.terminate();
+  return;
+}
   console.log("🔌 Connected");
 ws.isAlive = true;
 
@@ -59,27 +97,46 @@ ws.on("pong", () => {
 // 🔴 VIEWER MANUAL DISCONNECT
 // ===============================
 if (data.type === "viewer-disconnect") {
-  console.log("🔴 Viewer manually disconnected");
 
-  if (currentSessionId && sessions[currentSessionId]) {
+  const disconnectSessionId = data.sessionId;
 
-    delete sessions[currentSessionId].viewer;
+  console.log("🔴 Viewer manually disconnected:", disconnectSessionId);
 
-    // notify agent immediately
-    if (sessions[currentSessionId].broadcaster) {
-      sessions[currentSessionId].broadcaster.send(JSON.stringify({
+if (
+  disconnectSessionId &&
+  sessions[disconnectSessionId]
+) {
+
+  delete sessions[disconnectSessionId].viewer;
+  sessions[disconnectSessionId].lastEvent =
+  "Viewer disconnected";
+
+sessions[disconnectSessionId].lastUpdated =
+  new Date().toLocaleString();
+  
+
+  if (sessions[disconnectSessionId].broadcaster) {
+
+    safeSend(
+      sessions[disconnectSessionId].broadcaster,
+      {
         type: "viewer-left"
-      }));
-    }
+      }
+    );
 
-    // clean empty session
-    if (!sessions[currentSessionId].broadcaster) {
-      delete sessions[currentSessionId];
-      console.log("🧹 Session removed (viewer left):", currentSessionId);
-    }
   }
 
-  return;
+  if (!sessions[disconnectSessionId].broadcaster) {
+    delete sessions[disconnectSessionId];
+
+    console.log(
+      "🧹 Session removed (viewer left):",
+      disconnectSessionId
+    );
+  }
+}
+
+return;
 }
 
     // ===============================
@@ -87,14 +144,21 @@ if (data.type === "viewer-disconnect") {
     // ===============================
     if (data.type === "join-viewer") {
 
-  if (data.secret !== "Nalukkettil@12123") {
+  if (data.secret !== SIGNAL_SECRET) {
     console.log("❌ Unauthorized viewer");
     return;
   }
 
-      currentSessionId = data.sessionId;
-      role = "viewer";
+      if (!data.sessionId) {
+  console.log("❌ Viewer missing sessionId");
+  return;
+}
 
+currentSessionId = data.sessionId;
+role = "viewer";
+try {
+  sessions[currentSessionId]?.viewer?.terminate?.();
+} catch {}
       // 🔥 HARD RESET SESSION (fix stale dead sessions)
    sessions[currentSessionId] = {
   viewer: ws,
@@ -112,9 +176,12 @@ if (data.type === "viewer-disconnect") {
       sessions[currentSessionId] &&
       sessions[currentSessionId].broadcaster
     ) {
-      sessions[currentSessionId].broadcaster.send(JSON.stringify({
-        type: "viewer-ready"
-      }));
+     safeSend(
+  sessions[currentSessionId].broadcaster,
+  {
+    type: "viewer-ready"
+  }
+);
 
       console.log("🚀 viewer-ready sent to agent");
     }
@@ -139,13 +206,21 @@ if (
   data.type === "agent-join"
 ) {
 
-  if (data.secret !== "Nalukkettil@12123") {
-    console.log("❌ Unauthorized agent");
+if (data.secret !== SIGNAL_SECRET) {
+      console.log("❌ Unauthorized agent");
     return;
   }
 
-      currentSessionId = data.sessionId;
-      role = "agent";
+  if (!data.sessionId) {
+  console.log("❌ Agent missing sessionId");
+  return;
+}
+
+currentSessionId = data.sessionId;
+role = "agent";
+try {
+  sessions[currentSessionId]?.broadcaster?.terminate?.();
+} catch {}
 
       // 🔥 KEEP VIEWER, REPLACE AGENT CLEANLY
       sessions[currentSessionId] = {
@@ -158,9 +233,9 @@ if (
       console.log("🟢 Agent joined:", currentSessionId);
 
       if (sessions[currentSessionId].viewer) {
-        ws.send(JSON.stringify({
-          type: "viewer-ready"
-        }));
+     safeSend(ws, {
+  type: "viewer-ready"
+});
 
         console.log("🚀 viewer-ready sent to agent");
       }
@@ -178,7 +253,14 @@ if (
       }
 
       const s = sessions[data.sessionId];
-      if (!s) return;
+
+if (!s) {
+  console.log(
+    `⚠️ Missing session for ${data.type}:`,
+    data.sessionId
+  );
+  return;
+}
 
       if (data.type === "offer") {
         console.log("📡 Offer → viewer");
@@ -186,8 +268,7 @@ if (
         s.lastEvent = "Offer sent to viewer";
         s.lastUpdated = new Date().toLocaleString();
 
-        s.viewer?.send(JSON.stringify(data));
-      }
+safeSend(s.viewer, data);      }
 
       if (data.type === "answer") {
         console.log("📡 Answer → agent");
@@ -195,8 +276,7 @@ if (
         s.lastEvent = "Answer sent to agent";
         s.lastUpdated = new Date().toLocaleString();
 
-        s.broadcaster?.send(JSON.stringify(data));
-      }
+safeSend(s.broadcaster, data);      }
 
       if (data.type === "ice-candidate") {
         console.log("❄️ ICE candidate exchanged");
@@ -205,9 +285,9 @@ if (
         s.lastUpdated = new Date().toLocaleString();
 
         if (data.from === "viewer") {
-          s.broadcaster?.send(JSON.stringify(data));
+          safeSend(s.broadcaster, data);
         } else {
-          s.viewer?.send(JSON.stringify(data));
+          safeSend(s.viewer, data);
         }
       }
 
@@ -218,17 +298,36 @@ if (
   // ===============================
   // 🔥 CLEANUP ON DISCONNECT
   // ===============================
+
+  ws.on("error", (err) => {
+  console.log("⚠️ WebSocket error:", err.message);
+});
+
   ws.on("close", () => {
     console.log("❌ Disconnected");
 
     if (currentSessionId && sessions[currentSessionId]) {
-      if (role === "viewer") {
-        delete sessions[currentSessionId].viewer;
-      }
+     if (role === "viewer") {
 
-      if (role === "agent") {
-        delete sessions[currentSessionId].broadcaster;
-      }
+  delete sessions[currentSessionId].viewer;
+
+  sessions[currentSessionId].lastEvent =
+    "Viewer socket closed";
+
+  sessions[currentSessionId].lastUpdated =
+    new Date().toLocaleString();
+}
+
+    if (role === "agent") {
+
+  delete sessions[currentSessionId].broadcaster;
+
+  sessions[currentSessionId].lastEvent =
+    "Agent socket closed";
+
+  sessions[currentSessionId].lastUpdated =
+    new Date().toLocaleString();
+}
 
       // 🔥 Remove empty dead session
       if (
@@ -252,6 +351,38 @@ setInterval(() => {
     ws.ping();
   });
 }, 30000);
+// 🔥 CLEAN STALE SESSIONS
+setInterval(() => {
+
+  const now = Date.now();
+
+  for (const sessionId in sessions) {
+
+    const session = sessions[sessionId];
+
+    const updated =
+      new Date(session.lastUpdated).getTime() || 0;
+
+    if (now - updated > 30 * 60 * 1000) {
+
+      console.log(
+        "🧹 Removing stale WebRTC session:",
+        sessionId
+      );
+
+      try {
+        session.viewer?.terminate?.();
+      } catch {}
+
+      try {
+        session.broadcaster?.terminate?.();
+      } catch {}
+
+      delete sessions[sessionId];
+    }
+  }
+
+}, 5 * 60 * 1000);
 
 const PORT = process.env.PORT || 3000;
 
