@@ -112,8 +112,7 @@ if (
   "Viewer disconnected";
 
 sessions[disconnectSessionId].lastUpdated =
-  new Date().toLocaleString();
-  
+Date.now()  
 
   if (sessions[disconnectSessionId].broadcaster) {
 
@@ -160,12 +159,17 @@ try {
   sessions[currentSessionId]?.viewer?.terminate?.();
 } catch {}
       // 🔥 HARD RESET SESSION (fix stale dead sessions)
-   sessions[currentSessionId] = {
-  viewer: ws,
-  broadcaster: sessions[currentSessionId]?.broadcaster || null,
-  lastEvent: "Viewer joined",
-  lastUpdated: new Date().toLocaleString()
-};
+if (!sessions[currentSessionId]) {
+  sessions[currentSessionId] = {};
+}
+
+sessions[currentSessionId].viewer = ws;
+
+sessions[currentSessionId].lastEvent =
+  "Viewer joined";
+
+sessions[currentSessionId].lastUpdated =
+  new Date().toLocaleString();
 
       console.log("👀 Viewer joined:", currentSessionId);
 
@@ -223,12 +227,17 @@ try {
 } catch {}
 
       // 🔥 KEEP VIEWER, REPLACE AGENT CLEANLY
-      sessions[currentSessionId] = {
-        viewer: sessions[currentSessionId]?.viewer || null,
-        broadcaster: ws,
-        lastEvent: "Agent joined",
-        lastUpdated: new Date().toLocaleString()
-      };
+   if (!sessions[currentSessionId]) {
+  sessions[currentSessionId] = {};
+}
+
+sessions[currentSessionId].broadcaster = ws;
+
+sessions[currentSessionId].lastEvent =
+  "Agent joined";
+
+sessions[currentSessionId].lastUpdated =
+  new Date().toLocaleString();
 
       console.log("🟢 Agent joined:", currentSessionId);
 
@@ -361,7 +370,7 @@ setInterval(() => {
     const session = sessions[sessionId];
 
     const updated =
-      new Date(session.lastUpdated).getTime() || 0;
+  Number(session.lastUpdated || 0);
 
     if (now - updated > 30 * 60 * 1000) {
 
